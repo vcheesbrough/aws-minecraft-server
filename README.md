@@ -20,8 +20,8 @@ Local public key will be `C:\Users\yourname\.ssh\id_rsa.pub`,
 
 ## Backups, startup and shutdown
 The server can be started and stopped with the aws console (https://eu-west-2.console.aws.amazon.com/ec2/v2/home?region=eu-west-2#Instances:)
-The server will automatically shut itself down after a configured number of seconds of with no-one logged into minecraft, default is 1 hour, can be configured with MinecraftIdleShutdownSeconds=XXXXX on deployment
-The server will always take a backup in S3 (https://s3.console.aws.amazon.com/s3/home?region=eu-west-2), multiple versions will be retained for one week, with the most recent version being retained indefinately.
+The server will automatically shut itself down after a configured number of seconds of with no-one logged into minecraft, default is 1 hour, can be configured with MinecraftIdleShutdownSeconds=XXXXX on deployment.
+The server will always take a backup in S3 (https://s3.console.aws.amazon.com/s3/home?region=eu-west-2) as it is shutting down, multiple versions will be retained for one week, with the most recent version being retained indefinately.
 
 ## Costs
 Small, at the time of writing a t3.medium instances costs around half a dollar cent per hour of use.

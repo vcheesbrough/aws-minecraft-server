@@ -185,12 +185,6 @@ Resources:
               mode: "000644"
               owner: "duckdns"
               group: "duckdns"
-            /home/minecraft/.ssh/authorized_keys:
-              content: !Sub |
-                ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDjDkDH1Yk1e+0eM0TbGKkpjbq9o8WL5sEeMQ44iRrNevvmzc0/6+OTl3RNHLlXzlwbhY5EOpxSIWs57vigqdOl2blx7Ovi1DsXGkooXSSfld0NrTCo4lqWl6u37FIAbc4ijH6a4Fh0Lz9MNlrbcyApyorGye47cvJ6pS4A93Gbo22CY27Rz/VYPjJA3bNNu14/2No4lp44cichIoJWqX5nuSZto1pp+77NT9EjWto/TWAsb5I+mFhGoK2Hs+c6QLQGhFsM8RMkA5eSbAAUk+rQJfKJVJGXOC0VQA045Xu2hnAhDEyq0Awt6NkV5R+C6ZmlydPTwwbeJ0Uub+l1LyzP vince@Ryzen
-              mode: "000700"
-              owner: "minecraft"
-              group: "minecraft"
             /usr/local/bin/setProperty:
               content: !Sub |
                 #!/bin/bash
