@@ -12,17 +12,17 @@ Local public key will be `C:\Users\yourname\.ssh\id_rsa.pub`,
 1. Configure AWS command line interface with CLI access and secret key from above: (https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-install-windows.html), use region eu-west-2
 1. Download cloudformation.yaml from this repo
 1. In the same directory deploy the server:
-	
-	aws cloudformation deploy 
-	--stack-name minecraft-server 
-	--template cloudformation.yaml 
-	--capabilities CAPABILITY_NAMED_IAM 
-	--parameter-overrides 
-		SshKeyName=<MYKEYNAME> 
-		DuckdnsDomain=<DUCKDNSHOST> 
-		DuckdnsToken=<DUCKDNSTOKEN> 
-		MinecraftUsername=<MINECRAFTUSERNAME> 
-		RconPassword=<MAKEAPASSWORDUP> 
+
+	``aws cloudformation deploy `
+	--stack-name minecraft-server `
+	--template cloudformation.yaml `
+	--capabilities CAPABILITY_NAMED_IAM `
+	--parameter-overrides `
+		SshKeyName=<MYKEYNAME> `
+		DuckdnsDomain=<DUCKDNSHOST> `
+		DuckdnsToken=<DUCKDNSTOKEN> `
+		MinecraftUsername=<MINECRAFTUSERNAME> `
+		RconPassword=<MAKEAPASSWORDUP> ``
 
 1. It will take approximately 5 minutes for the server to be ready to use the first time.
 1. Once the deployment has completed you will not need these tools again, the instance can be started and stopped from the aws console (https://aws.amazon.com/console/)
