@@ -8,6 +8,8 @@ Parameters:
   LatestAmiId:
     Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
     Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+  SshKeyName:
+    Type: String
   DuckdnsDomain:
     Type: String
   DuckdnsToken:
@@ -84,7 +86,7 @@ Resources:
     Properties:
       ImageId: !Ref LatestAmiId
       InstanceType: t3.medium
-      KeyName: vincent@ryzen
+      KeyName: !Sub ${SshKeyName}
       SecurityGroups:
       - Ref: GameServerSecurityGroup
       IamInstanceProfile: !Ref GameServerInstanceProfile
