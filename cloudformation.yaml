@@ -1,0 +1,403 @@
+AWSTemplateFormatVersion: "2010-09-09"
+#/var/log/cfn-init-cmd.log: cfn-init and command output with timestamps
+#/var/log/cfn-init.log: cfn-init and command output
+#/var/log/cloud-init.log: cloud init logs pertaining to running the commands in user-data
+#/var/log/cloud-init-output.log: output from the user-data commands themselves
+
+Parameters:
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+  SshKeyName:
+    Type: String
+  DuckdnsDomain:
+    Type: String
+  DuckdnsToken:
+    Type: String
+  MinecraftServerDownloadUrl:
+    Type: String
+    Default: https://launcher.mojang.com/v1/objects/a16d67e5807f57fc4e550299cf20226194497dc2/server.jar
+  MinecraftServerInstallPath:
+    Type: String
+    Default: /opt/minecraftserver
+  MinecraftUsername:
+    Type: String
+  MinecraftDifficulty:
+    Type: String
+    Default: normal
+  MinecraftIdleShutdownSeconds:
+    Type: Number
+    Default: 3600
+  RconPassword:
+    Type: String
+  RconDownloadUrl:
+    Type: String
+    Default: "https://github.com/Tiiffi/mcrcon/releases/download/v0.7.1/mcrcon-0.7.1-linux-x86-64.tar.gz"
+  RconPort:
+    Type: String
+    Default: 25574
+  JavaArguments:
+    Type: String
+    Default: "-Xms3G -Xmx3G"
+
+Resources: 
+  GameSavesBackupBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - NoncurrentVersionExpirationInDays: 7
+            Status: Enabled
+
+  GameServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+
+  GameServerRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: s3
+      Roles:
+      - Ref: GameServerRole
+      PolicyDocument:
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:*
+          Resource: "*"
+
+  GameServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref GameServerRole
+
+  GameServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.medium
+      KeyName: !Sub ${SshKeyName}
+      SecurityGroups:
+      - Ref: GameServerSecurityGroup
+      IamInstanceProfile: !Ref GameServerInstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+           #!/bin/bash -xe
+           sudo adduser --shell /bin/bash duckdns
+           sudo adduser --shell /bin/bash minecraft
+           sudo usermod -a -G wheel minecraft
+           yum update -y aws-cfn-bootstrap
+           /opt/aws/bin/cfn-init -v --stack ${AWS::StackId} --resource GameServer --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+           /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
+           /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource GameServer --region ${AWS::Region}
+      Tags:
+        - Key: Name
+          Value: !Sub ${DuckdnsDomain}.duckdns.org
+
+    Metadata: 
+      AWS::CloudFormation::Init:
+        config:
+          packages:
+            yum: 
+              htop: []
+          sources:
+            /opt/mcrcon: !Sub ${RconDownloadUrl}
+          files:
+            /etc/sudoers.d/minecraft-user:
+              content: !Sub |
+                minecraft ALL=(ALL) NOPASSWD:/usr/sbin/shutdown
+              mode: "000400"
+              owner: "root"
+              group: "root"
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                # The interval used to check for changes to the resource metadata in minutes. Default is 15
+                interval=2
+              mode: "000400"
+              owner: "root"
+              group: "root"
+            # The user actions that the cfn-hup daemon calls periodically are defined in the hooks.conf configuration file.
+            # To support composition of several applications deploying change notification hooks, cfn-hup supports a directory named hooks.d that is located in the hooks configuration directory. You can place one or more additional hooks configuration files in the hooks.d directory. The additional hooks files must use the same layout as the hooks.conf file.
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.GameServer.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource GameServer --region ${AWS::Region}
+              mode: "000400"
+              owner: "root"
+              group: "root"            
+            /home/duckdns/duck.sh:
+              content: !Sub |
+                #!/bin/bash
+                current=""
+                while true; do
+                  latest=`ec2-metadata --public-ipv4`
+                  echo "public-ipv4=$latest"
+                  if [ "$current" == "$latest" ]
+                  then
+                    echo "ip not changed"
+                  else
+                    echo "ip has changed - updating"
+                    current=$latest
+                    echo url="https://www.duckdns.org/update?domains=${DuckdnsDomain}&token=${DuckdnsToken}&ip=" | curl -k -o ~/duck.log -K -
+                  fi
+                  sleep 5m
+                done       
+              mode: "000700"
+              owner: "duckdns"
+              group: "duckdns"
+            /usr/lib/systemd/system/duckdns.service:
+              content: !Sub |
+                [Unit]
+                Description=Duckdns updater
+                After=network.target
+                
+                [Service]
+                WorkingDirectory=/home/duckdns
+                ExecStart=/home/duckdns/duck.sh
+                Restart=always
+                RestartSec=30
+                StandardOutput=syslog
+                StandardError=syslog
+                SyslogIdentifier=duck.sh
+                User=duckdns
+                Group=duckdns
+                
+                [Install]
+                WantedBy=multi-user.target
+              mode: "000644"
+              owner: "duckdns"
+              group: "duckdns"
+            /usr/local/bin/setProperty:
+              content: !Sub |
+                #!/bin/bash
+                #version: 0.1
+                ### usage: setProperty key value filename
+
+                if [ -z "$1" ]; then
+                  echo "No parameters provided, exiting..."
+                  exit 1
+                fi
+                if [ -z "$2" ]; then
+                  echo "Key provided, but no value, breaking"
+                  exit 1
+                fi
+                if [ -z "$3" ] && [ -z "$setPropertyFile" ]; then
+                  echo "No file provided or setPropertyFile is not set, exiting..."
+                  exit 1
+                fi
+
+                if [ "$setPropertyFile" ] && [ "$3" ]; then
+                    echo "setPropertyFile variable is set AND filename in comamnd! Use only or the other. Exiting..."
+                    exit 1
+                else
+                  if [ "$3" ] && [ ! -f "$3" ]; then
+                    echo "File in command NOT FOUND!"
+                    exit 1
+                  elif [ "$setPropertyFile" ] && [ ! -f "$setPropertyFile" ]; then
+                    echo "File in setPropertyFile variable NOT FOUND!"
+                    exit 1
+                  fi
+                fi
+
+                if [ "$setPropertyFile" ]; then
+                  file=$setPropertyFile
+                else
+                  file=$3
+                fi
+
+                awk -v pat="^$1=" -v value="$1=$2" '{ if ($0 ~ pat) print value; else print $0; }' "$file" > "$file".tmp
+                mv "$file".tmp "$file"
+              mode: "000755"
+              owner: "root"
+              group: "root"
+            /usr/lib/systemd/system/minecraftserver.service:
+              content: !Sub |
+                [Unit]
+                Description=Minecraft Server Unit
+                After=network.target
+                
+                [Service]
+                WorkingDirectory=/home/minecraft/game-data
+                ExecStart=/usr/bin/java ${JavaArguments} -jar ${MinecraftServerInstallPath}/server.jar
+                ExecStartPost=/bin/bash -c 'until /home/minecraft/server-command.sh /seed; do sleep 1; done > /dev/null 2>&1'
+                ExecStopPost=/usr/bin/sh -c 'cd /home/minecraft/game-data;rm -fR logs; tar -czf - *|aws s3 cp - s3://${GameSavesBackupBucket}/minecraft-server-${DuckdnsDomain}.duckdns.org.tar.gz'
+                ExecStop=/usr/bin/sh -c '/home/minecraft/server-command.sh /stop'
+                Restart=always
+                RestartSec=30
+                StandardOutput=syslog
+                StandardError=syslog
+                SyslogIdentifier=MCSRV
+                User=minecraft
+                Group=minecraft
+                
+                [Install]
+                WantedBy=multi-user.target                
+              mode: "000644"
+              owner: "minecraft"
+              group: "minecraft"
+            /home/minecraft/server-command.sh:
+              content: !Sub |
+                #!/bin/bash
+                /opt/mcrcon/mcrcon-0.7.1-linux-x86-64/mcrcon -p ${RconPassword} -P ${RconPort} "$@"
+              mode: "000700"
+              owner: "minecraft"
+              group: "minecraft"
+            /etc/rsyslog.d/minecraftserver.conf:
+              content: !Sub |
+                if $programname == 'MCSRV' then {
+                  action(type="omfile" dirCreateMode="0755" FileCreateMode="0644" File="/var/log/minecraft-server/server.log")
+                }
+                # Discard 
+                if $programname == 'MCSRV' then ~              
+              mode: "000644"
+              owner: "minecraft"
+              group: "minecraft"
+            /usr/lib/systemd/system/shutdown-if-idle.service:
+              content: !Sub |
+                [Unit]
+                Description=Shut machine down after an hour if no users on minecraft
+                After=network.target minecraftserver.service
+                
+                [Service]
+                WorkingDirectory=/home/minecraft
+                ExecStart=/bin/sh -c "/home/minecraft/shutdown-if-idle.sh"
+                Restart=always
+                RestartSec=30
+                StandardOutput=syslog
+                StandardError=syslog
+                SyslogIdentifier=shutdown-if-idle
+                User=minecraft
+                Group=minecraft
+                
+                [Install]
+                WantedBy=multi-user.target                
+              mode: "000644"
+              owner: "minecraft"
+              group: "minecraft"
+            /home/minecraft/shutdown-if-idle.sh:
+              content: !Sub |
+                #!/bin/bash
+
+                shutdown_idle_seconds=${MinecraftIdleShutdownSeconds}
+                last_used_seconds=`date +%s`
+
+                while true; do
+                        current_users=`/home/minecraft/server-command.sh /list`
+                        case "$current_users" in
+                                *"There are 0 of a max"*)
+                                        ;;
+                                *"There are"*)
+                                        last_used_seconds=`date +%s`
+                                        ;;
+                        esac
+                        now_seconds=`date +%s`
+                        seconds_since_last_activity=$(( $now_seconds - $last_used_seconds ))
+                        if (( $seconds_since_last_activity > $shutdown_idle_seconds ))
+                        then
+                                echo Shutting down now
+                                sudo shutdown now
+                        fi
+                        sleep 1m
+                done                         
+              mode: "000700"
+              owner: "minecraft"
+              group: "minecraft"
+          commands:
+            01-init-systemd-services:
+              command: !Sub |
+                #!/bin/bash -xe
+                systemctl restart rsyslog.service
+            02-start-duckdns:
+              command: !Sub |
+                #!/bin/bash -xe
+                systemctl enable duckdns.service
+                systemctl start duckdns.service
+            03-install-java:
+              command: !Sub |
+                #!/bin/bash -xe
+                sudo rpm --import https://yum.corretto.aws/corretto.key
+                sudo curl -L -o /etc/yum.repos.d/corretto.repo https://yum.corretto.aws/corretto.repo
+                sudo yum install -y java-16-amazon-corretto-devel
+            04-install-minecraft-server-binary:
+              command: !Sub |
+                #!/bin/bash -xe
+                mkdir ${MinecraftServerInstallPath}
+                curl -L ${MinecraftServerDownloadUrl} > ${MinecraftServerInstallPath}/server.jar
+                chown -R minecraft:minecraft ${MinecraftServerInstallPath}
+              test: "test ! -e ${MinecraftServerInstallPath}/server.jar"
+            05-create-minecraft-files:
+              command: !Sub |
+                #!/bin/bash -xe
+                sudo -H -s -u minecraft <<'EOF'
+                mkdir -p game-data
+                cd game-data
+                java -jar ${MinecraftServerInstallPath}/server.jar
+                EOF
+              cwd: /home/minecraft
+              test: "test ! -e /home/minecraft/game-data/eula.txt"
+            06-configure-minecraft-files:
+              command: !Sub |
+                #!/bin/bash -xe
+                sudo -H -s -u minecraft <<'EOF'
+                cd game-data
+                /usr/local/bin/setProperty eula true eula.txt
+                /usr/local/bin/setProperty enable-rcon true server.properties
+                /usr/local/bin/setProperty rcon.password ${RconPassword} server.properties
+                /usr/local/bin/setProperty rcon.port ${RconPort} server.properties
+                /usr/local/bin/setProperty difficulty ${MinecraftDifficulty} server.properties
+                /usr/local/bin/setProperty white-list true server.properties
+                /usr/local/bin/setProperty max-players 5 server.properties
+                /usr/local/bin/setProperty motd ${DuckdnsDomain}.duckdns.org server.properties
+                EOF
+              cwd: /home/minecraft
+            07-enable-server:
+              command: !Sub |
+                #!/bin/bash -xe
+                systemctl enable minecraftserver.service
+                systemctl start minecraftserver.service
+                sudo -H -s -u minecraft <<'EOF'
+                /home/minecraft/server-command.sh "/op ${MinecraftUsername}"
+                EOF
+              cwd: /home/minecraft
+
+  GameServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Enable Minecraft Server ports and ssh only for IP4"
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        FromPort: '25565'
+        IpProtocol: tcp
+        ToPort: '25565'
+      - CidrIp: 0.0.0.0/0
+        FromPort: '19132'
+        IpProtocol: udp
+        ToPort: '19132'
+      - CidrIp: 0.0.0.0/0
+        FromPort: '22'
+        IpProtocol: tcp
+        ToPort: '22'
+Outputs:
+  PublicIp:
+    Description: GameServer Public IP
+    Value: !GetAtt GameServer.PublicIp
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicIp"
