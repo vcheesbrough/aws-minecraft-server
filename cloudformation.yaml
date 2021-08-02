@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: "2010-09-09"
+#/var/log/cfn-init-cmd.log: cfn-init and command output with timestamps
+#/var/log/cfn-init.log: cfn-init and command output
+#/var/log/cloud-init.log: cloud init logs pertaining to running the commands in user-data
+#/var/log/cloud-init-output.log: output from the user-data commands themselves
+
+Parameters:
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+  DuckdnsDomain:
+    Type: String
+  DuckdnsToken:
+    Type: String
+  MinecraftServerDownloadUrl:
+    Type: String
+    Default: https://launcher.mojang.com/v1/objects/a16d67e5807f57fc4e550299cf20226194497dc2/server.jar
+  MinecraftServerInstallPath:
+    Type: String
+    Default: /opt/minecraftserver
+  RconPassword:
+    Type: String
+  RconDownloadUrl:
+    Type: String
+    Default: "https://github.com/Tiiffi/mcrcon/releases/download/v0.7.1/mcrcon-0.7.1-linux-x86-64.tar.gz"
+
+Resources: 
+  GameSavesBackupBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - NoncurrentVersionExpirationInDays: 7
+            Status: Enabled
+
+  GameServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+
+  GameServerRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: s3
+      Roles:
+      - Ref: GameServerRole
+      PolicyDocument:
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:*
+          Resource: "*"
+
+  GameServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref GameServerRole
+
+  GameServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t3.small
+      KeyName: vincent@ryzen
+      SecurityGroups:
+      - Ref: GameServerSecurityGroup
+      IamInstanceProfile: !Ref GameServerInstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+           #!/bin/bash -xe
+           sudo adduser --shell /bin/bash duckdns
+           sudo adduser --shell /bin/bash minecraft
+           yum update -y aws-cfn-bootstrap
+           /opt/aws/bin/cfn-init -v --stack ${AWS::StackId} --resource GameServer --region ${AWS::Region}
+
+           sudo systemctl restart rsyslog.service
+
+           sudo systemctl enable duckdns.service
+           sudo systemctl start duckdns.service
+
+           sudo rpm --import https://yum.corretto.aws/corretto.key
+           sudo curl -L -o /etc/yum.repos.d/corretto.repo https://yum.corretto.aws/corretto.repo
+           sudo yum install -y java-16-amazon-corretto-devel
+
+           sudo mkdir ${MinecraftServerInstallPath}
+           sudo curl -L ${MinecraftServerDownloadUrl} > ${MinecraftServerInstallPath}/server.jar
+           sudo chown -R minecraft:minecraft ${MinecraftServerInstallPath}
+
+           GAME_DATA_PATH=/home/minecraft/game-data
+
+           sudo -H -u minecraft bash -c 'cd;mkdir game-data;cd game-data;java -jar ${MinecraftServerInstallPath}/server.jar'
+           sudo /usr/local/bin/setProperty eula true $GAME_DATA_PATH/eula.txt
+           sudo /usr/local/bin/setProperty enable-rcon true $GAME_DATA_PATH/server.properties
+           sudo /usr/local/bin/setProperty rcon.password ${RconPassword} $GAME_DATA_PATH/server.properties
+
+
+           #sudo -H -u minecraft bash -c 'cd;cd game-data;sed -i "s/eula=false/eula=true/g" eula.txt'
+           #sudo -H -u minecraft bash -c 'cd;cd game-data;sed -i "s/enable-rcon=false/enable-rcon=true/g" server.properties'
+           #sudo -H -u minecraft bash -c 'cd;cd game-data;sed -i "s/rcon.password=.*$/rcon.password=${RconPassword}/g" server.properties'
+
+           #sudo systemctl enable vintagestoryserver.service
+           #sudo systemctl start vintagestoryserver.service
+           #sudo systemctl enable shutdown-if-idle.service
+           #sudo systemctl start shutdown-if-idle.service
+      Tags:
+        - Key: Name
+          Value: !Sub ${DuckdnsDomain}.duckdns.org
+
+    Metadata: 
+      AWS::CloudFormation::Init:
+        config:
+          packages:
+            yum: 
+              htop: []
+          sources:
+            /opt/mcrcon: !Sub ${RconDownloadUrl}
+          files:
+            /home/duckdns/duck.sh:
+              content: !Sub |
+                #!/bin/bash
+                current=""
+                while true; do
+                  latest=`ec2-metadata --public-ipv4`
+                  echo "public-ipv4=$latest"
+                  if [ "$current" == "$latest" ]
+                  then
+                    echo "ip not changed"
+                  else
+                    echo "ip has changed - updating"
+                    current=$latest
+                    echo url="https://www.duckdns.org/update?domains=${DuckdnsDomain}&token=${DuckdnsToken}&ip=" | curl -k -o ~/duck.log -K -
+                  fi
+                  sleep 5m
+                done       
+              mode: "000700"
+              owner: "duckdns"
+              group: "duckdns"
+            /usr/lib/systemd/system/duckdns.service:
+              content: !Sub |
+                [Unit]
+                Description=Duckdns updater
+                After=network.target
+                
+                [Service]
+                WorkingDirectory=/home/duckdns
+                ExecStart=/home/duckdns/duck.sh
+                Restart=always
+                RestartSec=30
+                StandardOutput=syslog
+                StandardError=syslog
+                SyslogIdentifier=duck.sh
+                User=duckdns
+                Group=duckdns
+                
+                [Install]
+                WantedBy=multi-user.target
+              mode: "000644"
+              owner: "duckdns"
+              group: "duckdns"
+            /home/minecraft/.ssh/authorized_keys:
+              content: !Sub |
+                ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDjDkDH1Yk1e+0eM0TbGKkpjbq9o8WL5sEeMQ44iRrNevvmzc0/6+OTl3RNHLlXzlwbhY5EOpxSIWs57vigqdOl2blx7Ovi1DsXGkooXSSfld0NrTCo4lqWl6u37FIAbc4ijH6a4Fh0Lz9MNlrbcyApyorGye47cvJ6pS4A93Gbo22CY27Rz/VYPjJA3bNNu14/2No4lp44cichIoJWqX5nuSZto1pp+77NT9EjWto/TWAsb5I+mFhGoK2Hs+c6QLQGhFsM8RMkA5eSbAAUk+rQJfKJVJGXOC0VQA045Xu2hnAhDEyq0Awt6NkV5R+C6ZmlydPTwwbeJ0Uub+l1LyzP vince@Ryzen
+              mode: "000700"
+              owner: "minecraft"
+              group: "minecraft"
+            /usr/local/bin/setProperty:
+              content: !Sub |
+                #!/bin/bash
+                #version: 0.1
+                ### usage: setProperty key value filename
+
+                if [ -z "$1" ]; then
+                  echo "No parameters provided, exiting..."
+                  exit 1
+                fi
+                if [ -z "$2" ]; then
+                  echo "Key provided, but no value, breaking"
+                  exit 1
+                fi
+                if [ -z "$3" ] && [ -z "$setPropertyFile" ]; then
+                  echo "No file provided or setPropertyFile is not set, exiting..."
+                  exit 1
+                fi
+
+                if [ "$setPropertyFile" ] && [ "$3" ]; then
+                    echo "setPropertyFile variable is set AND filename in comamnd! Use only or the other. Exiting..."
+                    exit 1
+                else
+                  if [ "$3" ] && [ ! -f "$3" ]; then
+                    echo "File in command NOT FOUND!"
+                    exit 1
+                  elif [ "$setPropertyFile" ] && [ ! -f "$setPropertyFile" ]; then
+                    echo "File in setPropertyFile variable NOT FOUND!"
+                    exit 1
+                  fi
+                fi
+
+                if [ "$setPropertyFile" ]; then
+                  file=$setPropertyFile
+                else
+                  file=$3
+                fi
+
+                awk -v pat="^$1=" -v value="$1=$2" '{ if ($0 ~ pat) print value; else print $0; }' "$file" > "$file".tmp
+                mv "$file".tmp "$file"
+              mode: "000755"
+              owner: "root"
+              group: "root"
+
+  GameServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Enable Minecraft Server ports and ssh only for IP4"
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        FromPort: '25565'
+        IpProtocol: tcp
+        ToPort: '25565'
+      - CidrIp: 0.0.0.0/0
+        FromPort: '19132'
+        IpProtocol: udp
+        ToPort: '19132'
+      - CidrIp: 0.0.0.0/0
+        FromPort: '22'
+        IpProtocol: tcp
+        ToPort: '22'
+Outputs:
+  PublicIp:
+    Description: GameServer Public IP
+    Value: !GetAtt GameServer.PublicIp
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicIp"
