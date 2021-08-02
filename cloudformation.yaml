@@ -18,11 +18,19 @@ Parameters:
   MinecraftServerInstallPath:
     Type: String
     Default: /opt/minecraftserver
+  MinecraftUsername:
+    Type: String
+  MinecraftDifficulty:
+    Type: String
+    Default: normal
   RconPassword:
     Type: String
   RconDownloadUrl:
     Type: String
     Default: "https://github.com/Tiiffi/mcrcon/releases/download/v0.7.1/mcrcon-0.7.1-linux-x86-64.tar.gz"
+  RconPort:
+    Type: String
+    Default: 25574
 
 Resources: 
   GameSavesBackupBucket:
@@ -83,37 +91,9 @@ Resources:
            sudo adduser --shell /bin/bash duckdns
            sudo adduser --shell /bin/bash minecraft
            yum update -y aws-cfn-bootstrap
-           /opt/aws/bin/cfn-init -v --stack ${AWS::StackId} --resource GameServer --region ${AWS::Region}
-
-           sudo systemctl restart rsyslog.service
-
-           sudo systemctl enable duckdns.service
-           sudo systemctl start duckdns.service
-
-           sudo rpm --import https://yum.corretto.aws/corretto.key
-           sudo curl -L -o /etc/yum.repos.d/corretto.repo https://yum.corretto.aws/corretto.repo
-           sudo yum install -y java-16-amazon-corretto-devel
-
-           sudo mkdir ${MinecraftServerInstallPath}
-           sudo curl -L ${MinecraftServerDownloadUrl} > ${MinecraftServerInstallPath}/server.jar
-           sudo chown -R minecraft:minecraft ${MinecraftServerInstallPath}
-
-           GAME_DATA_PATH=/home/minecraft/game-data
-
-           sudo -H -u minecraft bash -c 'cd;mkdir game-data;cd game-data;java -jar ${MinecraftServerInstallPath}/server.jar'
-           sudo /usr/local/bin/setProperty eula true $GAME_DATA_PATH/eula.txt
-           sudo /usr/local/bin/setProperty enable-rcon true $GAME_DATA_PATH/server.properties
-           sudo /usr/local/bin/setProperty rcon.password ${RconPassword} $GAME_DATA_PATH/server.properties
-
-
-           #sudo -H -u minecraft bash -c 'cd;cd game-data;sed -i "s/eula=false/eula=true/g" eula.txt'
-           #sudo -H -u minecraft bash -c 'cd;cd game-data;sed -i "s/enable-rcon=false/enable-rcon=true/g" server.properties'
-           #sudo -H -u minecraft bash -c 'cd;cd game-data;sed -i "s/rcon.password=.*$/rcon.password=${RconPassword}/g" server.properties'
-
-           #sudo systemctl enable vintagestoryserver.service
-           #sudo systemctl start vintagestoryserver.service
-           #sudo systemctl enable shutdown-if-idle.service
-           #sudo systemctl start shutdown-if-idle.service
+           /opt/aws/bin/cfn-init -v --stack ${AWS::StackId} --resource GameServer --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+           /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
+           /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource GameServer --region ${AWS::Region}
       Tags:
         - Key: Name
           Value: !Sub ${DuckdnsDomain}.duckdns.org
@@ -127,6 +107,27 @@ Resources:
           sources:
             /opt/mcrcon: !Sub ${RconDownloadUrl}
           files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                # The interval used to check for changes to the resource metadata in minutes. Default is 15
+                interval=2
+              mode: "000400"
+              owner: "root"
+              group: "root"
+            # The user actions that the cfn-hup daemon calls periodically are defined in the hooks.conf configuration file.
+            # To support composition of several applications deploying change notification hooks, cfn-hup supports a directory named hooks.d that is located in the hooks configuration directory. You can place one or more additional hooks configuration files in the hooks.d directory. The additional hooks files must use the same layout as the hooks.conf file.
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.GameServer.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource GameServer --region ${AWS::Region}
+              mode: "000400"
+              owner: "root"
+              group: "root"            
             /home/duckdns/duck.sh:
               content: !Sub |
                 #!/bin/bash
@@ -218,6 +219,50 @@ Resources:
               mode: "000755"
               owner: "root"
               group: "root"
+          commands:
+            01-init-systemd-services:
+              command: !Sub |
+                #!/bin/bash -xe
+                systemctl restart rsyslog.service
+            02-start-duckdns:
+              command: !Sub |
+                #!/bin/bash -xe
+                systemctl enable duckdns.service
+                systemctl start duckdns.service
+            03-install-java:
+              command: !Sub |
+                #!/bin/bash -xe
+                sudo rpm --import https://yum.corretto.aws/corretto.key
+                sudo curl -L -o /etc/yum.repos.d/corretto.repo https://yum.corretto.aws/corretto.repo
+                sudo yum install -y java-16-amazon-corretto-devel
+            04-install-minecraft-server-binary:
+              command: !Sub |
+                #!/bin/bash -xe
+                mkdir ${MinecraftServerInstallPath}
+                curl -L ${MinecraftServerDownloadUrl} > ${MinecraftServerInstallPath}/server.jar
+                chown -R minecraft:minecraft ${MinecraftServerInstallPath}
+            05-create-minecraft-files:
+              command: !Sub |
+                #!/bin/bash -xe
+                sudo -H -s -u minecraft <<'EOF'
+                mkdir -p game-data
+                cd game-data
+                java -jar ${MinecraftServerInstallPath}/server.jar
+                EOF
+              cwd: /home/minecraft
+              test: "test ! -e /home/minecraft/game-data/eula.txt"
+            06-configure-minecraft-files:
+              command: !Sub |
+                #!/bin/bash -xe
+                sudo -H -s -u minecraft <<'EOF'
+                cd game-data
+                /usr/local/bin/setProperty eula true eula.txt
+                /usr/local/bin/setProperty enable-rcon true server.properties
+                /usr/local/bin/setProperty rcon.password ${RconPassword} server.properties
+                /usr/local/bin/setProperty rcon.port ${RconPort} server.properties
+                /usr/local/bin/setProperty difficulty ${MinecraftDifficulty} server.properties
+                EOF
+              cwd: /home/minecraft
 
   GameServerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
