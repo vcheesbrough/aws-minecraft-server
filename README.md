@@ -1,5 +1,7 @@
 # EC2 Minecraft Server
 
+A simple, cheap vanilla java edition minecraft server typically for a small number of users, it is expected the server will not run 24x7 and will be started when needed. The server will run on an AWS account of your choosing. These notes assume that you will deploy the server into a UK data centre (AWS region eu-west-2) and will be executed from a windows client (the server runs on linux of course). 
+
 ## Installation
 1. Create an AWS account with a payment method (this costs a small amount of money to use)
 1. Create a local SSH key pair (`ssh-keygen`, use default settings on windows)
@@ -21,7 +23,7 @@ Local public key will be `C:\Users\yourname\.ssh\id_rsa.pub`,
 ## Backups, startup and shutdown
 The server can be started and stopped with the aws console (https://eu-west-2.console.aws.amazon.com/ec2/v2/home?region=eu-west-2#Instances:)
 The server will automatically shut itself down after a configured number of seconds of with no-one logged into minecraft, default is 1 hour, can be configured with MinecraftIdleShutdownSeconds=XXXXX on deployment.
-The server will always take a backup in S3 (https://s3.console.aws.amazon.com/s3/home?region=eu-west-2) as it is shutting down, multiple versions will be retained for one week, with the most recent version being retained indefinately.
+The server will always take a backup in S3 (https://s3.console.aws.amazon.com/s3/home?region=eu-west-2) of the game files as it is shutting down, multiple versions will be retained for one week, with the most recent version being retained indefinately.
 
 ## Costs
 Small, at the time of writing a t3.medium instances costs around half a dollar cent per hour of use.
@@ -30,7 +32,7 @@ There will be some additional costs associated with backup storage, but they sho
 t3.medium may not be enough it has 2 cores and 4GB of RAM, more cores might be needed but the cost jumps dramatically, (t3.xlarge has 4 cores and 16GB RAM and costs 16 dollar cents an hour)
 
 ## Minecraft configuration
-Minecraft server files can be found in /home/minecraft/game-data, a script /home/minecraft/server-command.sh is provided to issue standard minecraft server / admin commands from an ssh session. (https://www.ign.com/wikis/minecraft/Admin_and_Server_Commands) The default configuration is thus
+Minecraft server files can be found in /home/minecraft/game-data, a script /home/minecraft/server-command.sh is provided to issue standard minecraft server / admin commands from an ssh session. (https://www.ign.com/wikis/minecraft/Admin_and_Server_Commands). The default configuration is thus
 * 3GB ram allocated to java for the server
 * 5 users maximum
 * users must be whitelisted
