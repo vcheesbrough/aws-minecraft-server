@@ -25,6 +25,9 @@ Parameters:
   MinecraftDifficulty:
     Type: String
     Default: normal
+  MinecraftIdleShutdownSeconds:
+    Type: Number
+    Default: 3600
   RconPassword:
     Type: String
   RconDownloadUrl:
@@ -95,6 +98,7 @@ Resources:
            #!/bin/bash -xe
            sudo adduser --shell /bin/bash duckdns
            sudo adduser --shell /bin/bash minecraft
+           sudo usermod -a -G wheel minecraft
            yum update -y aws-cfn-bootstrap
            /opt/aws/bin/cfn-init -v --stack ${AWS::StackId} --resource GameServer --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
            /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
@@ -112,6 +116,12 @@ Resources:
           sources:
             /opt/mcrcon: !Sub ${RconDownloadUrl}
           files:
+            /etc/sudoers.d/minecraft-user:
+              content: !Sub |
+                minecraft ALL=(ALL) NOPASSWD:/usr/sbin/shutdown
+              mode: "000400"
+              owner: "root"
+              group: "root"
             /etc/cfn/cfn-hup.conf:
               content: !Sub |
                 [main]
@@ -264,6 +274,56 @@ Resources:
                 # Discard 
                 if $programname == 'MCSRV' then ~              
               mode: "000644"
+              owner: "minecraft"
+              group: "minecraft"
+            /usr/lib/systemd/system/shutdown-if-idle.service:
+              content: !Sub |
+                [Unit]
+                Description=Shut machine down after an hour if no users on minecraft
+                After=network.target minecraftserver.service
+                
+                [Service]
+                WorkingDirectory=/home/minecraft
+                ExecStart=/bin/sh -c "/home/minecraft/shutdown-if-idle.sh"
+                Restart=always
+                RestartSec=30
+                StandardOutput=syslog
+                StandardError=syslog
+                SyslogIdentifier=shutdown-if-idle
+                User=minecraft
+                Group=minecraft
+                
+                [Install]
+                WantedBy=multi-user.target                
+              mode: "000644"
+              owner: "minecraft"
+              group: "minecraft"
+            /home/minecraft/shutdown-if-idle.sh:
+              content: !Sub |
+                #!/bin/bash
+
+                shutdown_idle_seconds=${MinecraftIdleShutdownSeconds}
+                last_used_seconds=`date +%s`
+
+                while true; do
+                        current_users=`/home/minecraft/server-command.sh /list`
+                        case "$current_users" in
+                                *"There are 0 of a max"*)
+                                        ;;
+                                *"There are"*)
+                                        last_used_seconds=`date +%s`
+                                        ;;
+                        esac
+                        now_seconds=`date +%s`
+                        seconds_since_last_activity=$(( $now_seconds - $last_used_seconds ))
+                        if (( $seconds_since_last_activity > $shutdown_idle_seconds ))
+                        then
+                                echo Shutting down now
+                                sudo shutdown now
+                        fi
+                        sleep 1m
+                done                         
+              mode: "000700"
               owner: "minecraft"
               group: "minecraft"
           commands:
