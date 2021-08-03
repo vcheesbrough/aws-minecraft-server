@@ -373,6 +373,8 @@ Resources:
                 #!/bin/bash -xe
                 systemctl enable minecraftserver.service
                 systemctl start minecraftserver.service
+                systemctl enable shutdown-if-idle.service
+                systemctl start shutdown-if-idle.service
                 sudo -H -s -u minecraft <<'EOF'
                 /home/minecraft/server-command.sh "/op ${MinecraftUsername}"
                 EOF
